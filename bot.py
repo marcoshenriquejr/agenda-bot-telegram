@@ -31,11 +31,16 @@ log = logging.getLogger(__name__)
 
 
 # Calendario
-def get_events(date):
+def fetch_calendar():
+    r = requests.get(ICAL, timeout=15)
+    r.raise_for_status()
+    return Calendar.from_ical(r.content)
+
+
+def get_events(date, cal=None):
     try:
-        r = requests.get(ICAL, timeout=15)
-        r.raise_for_status()
-        cal = Calendar.from_ical(r.content)
+        if cal is None:
+            cal = fetch_calendar()
         events = []
         for comp in cal.walk("VEVENT"):
             dt = comp["DTSTART"].dt
@@ -55,6 +60,9 @@ def get_events(date):
         return None
 
 
+DIAS_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
+
+
 def fmt(date, label):
     events = get_events(date)
     NL = chr(10)
@@ -66,6 +74,33 @@ def fmt(date, label):
     linhas = [header]
     for h, s in events:
         linhas.append(h + " - " + s)
+    return NL.join(linhas)
+
+
+def fmt_semana(start):
+    NL = chr(10)
+    try:
+        cal = fetch_calendar()
+    except Exception as e:
+        log.error("Erro ao buscar calendario: %s", e)
+        return "*Semana* - Nao consegui acessar o calendario agora."
+    fim = start + timedelta(days=6)
+    linhas = ["*Semana - " + start.strftime("%d/%m") + " a " + fim.strftime("%d/%m/%Y") + "*"]
+    tem_algum = False
+    for i in range(7):
+        d = start + timedelta(days=i)
+        events = get_events(d, cal=cal)
+        dia_label = DIAS_PT[d.weekday()] + " " + d.strftime("%d/%m")
+        if events is None:
+            linhas.append(NL + "*" + dia_label + "*")
+            linhas.append("Erro ao carregar.")
+        elif events:
+            tem_algum = True
+            linhas.append(NL + "*" + dia_label + "*")
+            for h, s in events:
+                linhas.append(h + " - " + s)
+    if not tem_algum:
+        linhas.append("Nenhum compromisso na semana.")
     return NL.join(linhas)
 
 
@@ -92,7 +127,7 @@ async def job_resumo(ctx):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Ola! Sou seu assistente de agenda."
-        " Comandos: /hoje | /amanha"
+        " Comandos: /hoje | /amanha | /semana"
     )
 
 async def cmd_hoje(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -102,14 +137,19 @@ async def cmd_amanha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     amanha = hoje() + timedelta(days=1)
     await update.message.reply_text(fmt(amanha, "Amanha"), parse_mode="Markdown")
 
+async def cmd_semana(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(fmt_semana(hoje()), parse_mode="Markdown")
+
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     t = update.message.text.lower()
-    if any(w in t for w in ["hoje", "agenda", "compromisso", "reuniao"]):
+    if "semana" in t:
+        await cmd_semana(update, ctx)
+    elif any(w in t for w in ["hoje", "agenda", "compromisso", "reuniao"]):
         await cmd_hoje(update, ctx)
     elif "amanha" in t:
         await cmd_amanha(update, ctx)
     else:
-        await update.message.reply_text("Use /hoje ou /amanha.")
+        await update.message.reply_text("Use /hoje, /amanha ou /semana.")
 
 
 # Main
@@ -125,6 +165,7 @@ def main():
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("hoje",   cmd_hoje))
     app.add_handler(CommandHandler("amanha", cmd_amanha))
+    app.add_handler(CommandHandler("semana", cmd_semana))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
     log.info("Bot iniciado.")
